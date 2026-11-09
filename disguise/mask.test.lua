@@ -19,7 +19,19 @@ local ruler = {
     persona_block = function() return "proud and cautious" end,
 }
 local settings = {}
-local actions = { blocked = false }
+local actions = { blocked = false, CONCLUDE = {} }
+local pacts, access, alliances = {}, {}, {}
+local engine_accepts = true
+local function conclude(action, agreements, value)
+    return function(from, to)
+        applied = { action, from, to }
+        if engine_accepts then agreements[from .. "|" .. to] = value end
+        return true
+    end
+end
+actions.CONCLUDE["non aggression pact"] = conclude("non_aggression", pacts, true)
+actions.CONCLUDE["soft military access"] = conclude("military_access", access, true)
+local break_alliance = conclude("break_alliance", alliances, false)
 local state = {
     data = {},
     setting = function(key, fallback) if settings[key] == nil then return fallback end return settings[key] end,
@@ -31,7 +43,7 @@ local state = {
 local at_war = true
 local parley = { apply = function(action, from, to) applied = { action, from, to }; return true end }
 local world = { keys = { "reikland", "kislev", "gelt" },
-    factions = { reikland = { leader_subtype = "emp_karl_franz" }, kislev = { leader_subtype = "ksl_katarin" } },
+    factions = { reikland = { leader_subtype = "emp_karl_franz" }, kislev = { leader_subtype = "ksl_katarin" }, gelt = {} },
     exists = function(key) return factions[key] end, attitude = function() return -60 end }
 local orders = { at_war = function() return at_war end }
 local function value(kind, key, field)
@@ -48,6 +60,10 @@ local cm = {
     get_faction = function(_, key)
         faction_reads[#faction_reads + 1] = key
         return {
+            key = key,
+            non_aggression_pact_with = function(_, other) return pacts[key .. "|" .. other.key] == true end,
+            military_access_pact_with = function(_, other) return access[key .. "|" .. other.key] == true end,
+            allied_with = function(_, other) return not not alliances[key .. "|" .. other.key] end,
             is_null_interface = function() return false end,
             is_dead = function() return false end,
             faction_leader = function()
@@ -56,6 +72,9 @@ local cm = {
             end,
         }
     end,
+    force_non_aggression_pact = function() end,
+    force_grant_military_access = function() end,
+    force_break_alliance = function(_, from, to) return break_alliance(from, to) end,
     apply_dilemma_diplomatic_bonus = function(_, from, to, bonus) applied = { bonus, from, to } end,
 }
 local p2 = { post = function(path, request, callback)
@@ -181,5 +200,69 @@ form = nil
 equip()
 ruler.talk_to("gelt", "No form selected.")
 assert(ordinary == 2 and not queued)
+
+local function has_outcome(wanted)
+    for _, outcome in ipairs(queued.request.response_format.json_schema.schema.properties.outcome.enum) do
+        if outcome == wanted then return true end
+    end
+    return false
+end
+
+form, owner, at_war = "ksl_katarin", "kislev", false
+equip()
+ruler.talk_to("gelt", "Let us sign a non-aggression pact.")
+assert(has_outcome("non_aggression"), "A new pact is unavailable in peacetime")
+assert(has_outcome("military_access"), "Military access is unavailable in peacetime")
+assert(not has_outcome("break_alliance"), "Alliance break was offered without an alliance")
+reply("non_aggression")
+assert_pair("non_aggression", "gelt", "kislev")
+assert(last:find("Заключён договор о ненападении.", 1, true))
+
+ruler.talk_to("gelt", "Grant Kislev military access.")
+assert(not has_outcome("non_aggression"), "An existing pact was offered again")
+reply("military_access")
+assert_pair("military_access", "gelt", "kislev")
+
+for _, alliance in ipairs({ "defensive", "military" }) do
+    alliances["gelt|kislev"] = alliance
+    ruler.talk_to("gelt", "Break your alliance with Kislev.")
+    assert(has_outcome("break_alliance"), "An existing alliance could not be broken")
+    assert(not has_outcome("military_access"), "Existing access was offered again")
+    reply("break_alliance")
+    assert_pair("break_alliance", "gelt", "kislev")
+    assert(last:find("Союз расторгнут.", 1, true))
+end
+
+access["gelt|kislev"] = false
+engine_accepts = false
+ruler.talk_to("gelt", "Grant Kislev access again.")
+reply("military_access")
+assert_pair("military_access", "gelt", "kislev")
+assert(last:find("Игра не подтвердила изменение договора.", 1, true), "A refused treaty was reported as successful")
+engine_accepts = true
+
+applied = nil
+ruler.talk_to("gelt", "Grant Kislev access again.")
+at_war = true
+reply("military_access")
+assert(not applied, "A deal was applied after war began")
+ruler.talk_to("gelt", "Can we sign treaties in wartime?")
+assert(not has_outcome("non_aggression") and not has_outcome("military_access") and not has_outcome("break_alliance"))
+reply("none")
+
+at_war = false
+actions.blocked = true
+alliances["gelt|kislev"] = "military"
+ruler.talk_to("gelt", "Break your alliance with Kislev.")
+assert(not has_outcome("break_alliance"), "Alliance break bypassed /apply off")
+reply("break_alliance")
+assert(not applied, "A blocked alliance was broken")
+
+actions.blocked = false
+world.factions.gelt.is_human = true
+ruler.talk_to("gelt", "Break your alliance with Kislev.")
+assert(not has_outcome("break_alliance"), "Alliance break was offered against a human faction")
+reply("break_alliance")
+assert(not applied, "A human faction was affected by a masked treaty")
 
 print("Mask diplomacy tests passed")
