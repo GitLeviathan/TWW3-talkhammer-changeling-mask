@@ -20,7 +20,7 @@ local ruler = {
 }
 local settings = {}
 local actions = { blocked = false, CONCLUDE = {} }
-local pacts, access, alliances = {}, {}, {}
+local pacts, access, alliances, trades, wars, absorbed = {}, {}, {}, {}, {}, {}
 local engine_accepts = true
 local function conclude(action, agreements, value)
     return function(from, to)
@@ -41,11 +41,21 @@ local state = {
     save = function() end,
 }
 local at_war = true
-local parley = { apply = function(action, from, to) applied = { action, from, to }; return true end }
+local applied_actions = {}
+local failed_outcome
+local parley = { apply = function(action, from, to)
+    if action == failed_outcome then return false end
+    applied = { action, from, to }
+    applied_actions[#applied_actions + 1] = action
+    if action == "peace" then at_war = false end
+    if action == "war" then wars[from .. "|" .. to] = true end
+    return true
+end }
 local world = { keys = { "reikland", "kislev", "gelt" },
-    factions = { reikland = { leader_subtype = "emp_karl_franz" }, kislev = { leader_subtype = "ksl_katarin" }, gelt = {} },
-    exists = function(key) return factions[key] end, attitude = function() return -60 end }
-local orders = { at_war = function() return at_war end }
+    factions = { reikland = { leader_subtype = "emp_karl_franz" }, kislev = { leader_subtype = "ksl_katarin", subculture = "emp" }, gelt = { subculture = "emp" }, reikland_enemy = {} },
+    exists = function(key) return factions[key] or key == "reikland_enemy" end,
+    resolve = function(name) if name == "Enemy" then return "reikland_enemy" end end, attitude = function() return -60 end }
+local orders = { at_war = function(a, b) if a == "reikland_enemy" or b == "reikland_enemy" then return wars[a .. "|" .. b] == true end; return at_war end }
 local function value(kind, key, field)
     context_reads = context_reads + 1
     assert(not in_diplomacy, "Form UI was queried while diplomacy was open")
@@ -65,7 +75,9 @@ local cm = {
             military_access_pact_with = function(_, other) return access[key .. "|" .. other.key] == true end,
             allied_with = function(_, other) return not not alliances[key .. "|" .. other.key] end,
             is_null_interface = function() return false end,
-            is_dead = function() return false end,
+            trade_agreement_with = function(_, other) return trades[key .. "|" .. other.key] == true end,
+            at_war_with = function(_, other) return wars[key .. "|" .. other.key] == true end,
+            is_dead = function() return absorbed[key] == true end,
             faction_leader = function()
                 return { is_null_interface = function() return false end,
                     character_subtype_key = function() return key == owner and is_leader and form or "other" end }
@@ -74,6 +86,16 @@ local cm = {
     end,
     force_non_aggression_pact = function() end,
     force_grant_military_access = function() end,
+    force_break_non_aggression_pact = function(_, from, to, dissolved)
+        assert(dissolved == false); conclude("break_non_aggression", pacts, false)(from, to)
+    end,
+    force_break_military_access = function(_, from, to, dissolved, hard)
+        assert(dissolved == false and hard == false); conclude("break_military_access", access, false)(from, to)
+    end,
+    force_break_trade_agreement = function(_, from, to) conclude("break_trade", trades, false)(from, to) end,
+    force_confederation = function(_, from, to)
+        applied = { "confederation", from, to }; if engine_accepts then absorbed[to] = true end
+    end,
     force_break_alliance = function(_, from, to) return break_alliance(from, to) end,
     apply_dilemma_diplomatic_bonus = function(_, from, to, bonus) applied = { bonus, from, to } end,
 }
@@ -88,8 +110,8 @@ end }
 
 local native_find, native_match, native_sub = string.find, string.match, string.sub
 local u8 = TALKHAMMER_U8 or {
-    index_of = function(text, needle) return native_find(text, needle, 1, true) end,
-    sub = native_sub,
+    index_of = function(text, needle, from) return native_find(text, needle, from or 1, true) end,
+    sub = native_sub, lower = string.lower,
 }
 addon.install({
     u8 = u8, cm = cm, core = core, context_value = value, ruler = ruler, state = state, actions = actions,
@@ -141,7 +163,7 @@ end
 local function reply(outcome, line)
     local callback = assert(queued).callback
     queued = nil
-    callback(nil, { choices = { { message = { content = { line = line or "Agreed.", outcome = outcome } } } } })
+    callback(nil, { choices = { { message = { content = { line = line or "Agreed.", outcomes = type(outcome) == "table" and outcome or { outcome } } } } } })
 end
 local function assert_pair(action, from, to)
     assert(applied and applied[1] == action and applied[2] == from and applied[3] == to,
@@ -158,8 +180,9 @@ reply("peace", " \tСогласна.\r\n")
 string.find, string.match = native_find, native_match
 assert(last:find("\nСогласна.\n", 1, true), "The reply text was not trimmed")
 assert_pair("peace", "reikland", "gelt")
-assert(#faction_reads == 2 and faction_reads[1] == "reikland" and faction_reads[2] == "reikland",
-    "Masked dialogue read unrelated live factions")
+for _, key in ipairs(faction_reads) do
+    assert(key == "reikland" or key == "gelt", "Masked dialogue read an unrelated live faction")
+end
 
 ruler.talk_to("gelt", "I withdraw our assurances.")
 reply("cool")
@@ -202,7 +225,7 @@ ruler.talk_to("gelt", "No form selected.")
 assert(ordinary == 2 and not queued)
 
 local function has_outcome(wanted)
-    for _, outcome in ipairs(queued.request.response_format.json_schema.schema.properties.outcome.enum) do
+    for _, outcome in ipairs(queued.request.response_format.json_schema.schema.properties.outcomes.items.enum) do
         if outcome == wanted then return true end
     end
     return false
@@ -247,8 +270,9 @@ at_war = true
 reply("military_access")
 assert(not applied, "A deal was applied after war began")
 ruler.talk_to("gelt", "Can we sign treaties in wartime?")
-assert(not has_outcome("non_aggression") and not has_outcome("military_access") and not has_outcome("break_alliance"))
-reply("none")
+assert(has_outcome("military_access") and not has_outcome("break_alliance"))
+reply("military_access")
+assert(not applied, "A post-peace outcome was applied without peace")
 
 at_war = false
 actions.blocked = true
@@ -264,5 +288,79 @@ ruler.talk_to("gelt", "Break your alliance with Kislev.")
 assert(not has_outcome("break_alliance"), "Alliance break was offered against a human faction")
 reply("break_alliance")
 assert(not applied, "A human faction was affected by a masked treaty")
+
+world.factions.gelt.is_human = false
+ruler.talk_to("gelt", "Kislev declares war.")
+assert(has_outcome("declare_war"), "The visitor cannot declare war")
+reply("declare_war")
+assert_pair("war", "kislev", "gelt")
+
+ruler.talk_to("gelt", "Kislev grants you military access.")
+reply("grant_military_access")
+assert_pair("military_access", "kislev", "gelt")
+trades["gelt|kislev"], access["gelt|kislev"] = true, true
+for _, outcome in ipairs({ "break_non_aggression", "break_trade", "break_military_access_incoming", "break_military_access_outgoing" }) do
+    ruler.talk_to("gelt", "Cancel this agreement.")
+    assert(has_outcome(outcome), "Existing agreement cannot be cancelled: " .. outcome)
+    reply(outcome)
+end
+assert_pair("break_military_access", "kislev", "gelt")
+assert(not pacts["gelt|kislev"] and not trades["gelt|kislev"] and not access["gelt|kislev"] and not access["kislev|gelt"])
+
+ruler.talk_to("gelt", "Attack them. [цель: unknown]")
+assert(not queued, "An unknown third faction reached Codex")
+ruler.talk_to("gelt", "Attack them. [цель: Enemy] [цель: reikland]")
+assert(not queued, "An ambiguous third faction reached Codex")
+ruler.talk_to("gelt", "Attack Enemy.")
+assert(not has_outcome("attack_third"), "The model received an unconfirmed third party")
+reply("none")
+ruler.talk_to("gelt", "Attack them. [цель: Enemy]")
+assert(has_outcome("attack_third"), "Named third-party attack is unavailable")
+reply("attack_third")
+assert_pair("war", "gelt", "reikland_enemy")
+ruler.talk_to("gelt", "Kislev will join your war. [цель: Enemy]")
+assert(has_outcome("join_recipient_war"), "The visitor cannot join the recipient war")
+reply("join_recipient_war")
+assert_pair("war", "kislev", "reikland_enemy")
+wars["gelt|reikland_enemy"] = false
+ruler.talk_to("gelt", "Join our war. [цель: Enemy]")
+assert(has_outcome("join_visitor_war"), "The recipient cannot join the visitor war")
+reply("join_visitor_war")
+assert_pair("war", "gelt", "reikland_enemy")
+
+at_war, applied_actions = true, {}
+ruler.talk_to("gelt", "Peace in exchange for trade.")
+assert(has_outcome("peace") and has_outcome("trade"), "A peace-and-trade package was not offered")
+reply({"trade", "peace"})
+assert(table.concat(applied_actions, "|") == "peace|trade", "Peace was not applied before trade")
+
+applied, applied_actions = nil, {}
+ruler.talk_to("gelt", "Conclude an alliance and declare war on us.")
+reply({"alliance", "declare_war"})
+assert(not applied and #applied_actions == 0, "A contradictory package was applied")
+
+at_war, applied_actions, failed_outcome = true, {}, "trade"
+ruler.talk_to("gelt", "Peace and trade.")
+reply({"peace", "trade"})
+assert(table.concat(applied_actions, "|") == "peace", "Partial settlement was not preserved")
+assert(last:find("частично", 1, true), "Partial settlement was not reported")
+failed_outcome = nil
+
+ruler.talk_to("gelt", "Hello.")
+assert(not has_outcome("confederate"), "Confederation was offered without a request")
+reply("none")
+world.factions.gelt.subculture = "other"
+ruler.talk_to("gelt", "Join the confederation of Kislev.")
+assert(not has_outcome("confederate"), "Confederation was offered across subcultures")
+reply("none")
+world.factions.gelt.subculture = "emp"
+ruler.talk_to("gelt", "Join the confederation of Kislev.")
+assert(has_outcome("confederate"), "Same-subculture confederation was unavailable")
+reply("confederate")
+assert_pair("confederation", "kislev", "gelt")
+absorbed.gelt = nil
+ruler.talk_to("gelt", "Kislev will join your confederation.")
+reply("join_confederation")
+assert_pair("confederation", "gelt", "kislev")
 
 print("Mask diplomacy tests passed")
