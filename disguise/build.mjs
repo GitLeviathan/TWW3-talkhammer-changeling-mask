@@ -53,6 +53,11 @@ if (!mainEntry || mainEntry.compressed) throw new Error(`Missing uncompressed ${
 if (!worldEntry || worldEntry.compressed) throw new Error('Missing uncompressed TalkHammer world module');
 const main = mainEntry.content.toString('utf8');
 const world = worldEntry.content.toString('utf8');
+const tradeReader = '{ "trade agreement", "faction_has_trade_agreement_with_faction", "cm" }';
+const nativeTradeReader = '{ "trade agreement", "trade_agreement_with", "faction" }';
+if (world.split(tradeReader).length !== 2) {
+  throw new Error('The installed TalkHammer no longer matches the trade reader hook');
+}
 const leaderCache = /(^[ \t]*)(f\.leader = world\.leader_name\(key\))(\r?\n)(?=[ \t]*list\[#list \+ 1\])/gm;
 if ([...world.matchAll(leaderCache)].length !== 1) {
   throw new Error('The installed TalkHammer no longer matches the faction snapshot hook');
@@ -76,7 +81,8 @@ end
 const entries = [
   [modulePath, await readFile(new URL('./mask.lua', import.meta.url))],
   [mainPath, Buffer.from(main.replace(hook, patch + hook), 'utf8')],
-  [worldPath, Buffer.from(world.replace(leaderCache, '$1$2$3$1f.leader_subtype = subtype$3'), 'utf8')],
+  [worldPath, Buffer.from(world.replace(leaderCache, '$1$2$3$1f.leader_subtype = subtype$3')
+    .replace(tradeReader, nativeTradeReader), 'utf8')],
 ];
 const result = pack(entries);
 const decoded = unpack(result);

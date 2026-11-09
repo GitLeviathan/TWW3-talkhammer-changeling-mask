@@ -256,6 +256,7 @@ function mask.install(deps)
                 },
             } },
         }
+        log("request prepared " .. form.faction .. " -> " .. target)
         active = session
         ruler.counterpart = target
         ruler.awaiting[target] = session.started
@@ -309,7 +310,7 @@ function mask.install(deps)
         function(context) return context.string == "button_shapeshift" end,
         queue_refresh, true)
     queue_refresh()
-    log("installed (cached form reader; faction snapshot)")
+    log("installed (cached form reader; direct trade reader)")
 end
 
 return mask
