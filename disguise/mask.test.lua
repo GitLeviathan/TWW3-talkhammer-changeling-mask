@@ -67,8 +67,13 @@ local core = { add_listener = function(_, id, event, condition, callback)
     listeners[event] = { condition = condition, callback = callback }
 end }
 
+local native_find, native_match, native_sub = string.find, string.match, string.sub
+local u8 = TALKHAMMER_U8 or {
+    index_of = function(text, needle) return native_find(text, needle, 1, true) end,
+    sub = native_sub,
+}
 addon.install({
-    cm = cm, core = core, context_value = value, ruler = ruler, state = state, actions = actions,
+    u8 = u8, cm = cm, core = core, context_value = value, ruler = ruler, state = state, actions = actions,
     world = world, parley = parley, orders = orders, p2 = p2,
     json = { decode = function(content) return content end },
 })
@@ -83,11 +88,14 @@ local function refresh()
     if scheduled then local callback = scheduled; scheduled = nil; callback() end
 end
 
+local function unsafe_pattern() error("The add-on used a native Lua pattern function") end
+string.find, string.match = unsafe_pattern, unsafe_pattern
 refresh()
 in_diplomacy = true
 dispatch("PanelOpenedCampaign", "diplomacy_dropdown")
 local reads_before = context_reads
-ruler.handle_command({ cmd = "mask", text = "" })
+ruler.handle_command({ cmd = "mask", text = " \t" })
+string.find, string.match = native_find, native_match
 assert(context_reads == reads_before, "/mask queried game UI contexts inside diplomacy")
 assert(#faction_reads == 1 and faction_reads[1] == "reikland", "/mask read unrelated live factions")
 assert(last:find("emp_karl_franz", 1, true), "/mask did not show the equipped form")
@@ -126,7 +134,10 @@ ruler.talk_to("gelt", "Let us sign a peace treaty.")
 assert(queued.request.response_format.json_schema.name == "changeling_mask_reply")
 assert(string.find(queued.request.messages[2].content, "reikland", 1, true))
 assert(not string.find(queued.request.messages[2].content, player, 1, true))
-reply("peace")
+string.find, string.match = unsafe_pattern, unsafe_pattern
+reply("peace", " \tСогласна.\r\n")
+string.find, string.match = native_find, native_match
+assert(last:find("\nСогласна.\n", 1, true), "The reply text was not trimmed")
 assert_pair("peace", "reikland", "gelt")
 assert(#faction_reads == 2 and faction_reads[1] == "reikland" and faction_reads[2] == "reikland",
     "Masked dialogue read unrelated live factions")

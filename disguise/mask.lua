@@ -11,18 +11,25 @@ local outcome_labels = {
 }
 
 local function key_string(value)
-    if type(value) ~= "string" or value == "nil" or value == "null" then return nil end
-    return value:match("^[%w_]+$") and value or nil
+    if type(value) ~= "string" or value == "" or value == "nil" or value == "null" then return nil end
+    for i = 1, #value do
+        local b = string.byte(value, i)
+        if not (b == 95 or (b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122)) then
+            return nil
+        end
+    end
+    return value
 end
 
-local function trim_line(value)
-    return type(value) == "string" and value:match("^%s*(.-)%s*$") or ""
+local function is_space(byte)
+    return byte == 32 or (byte >= 9 and byte <= 13)
 end
 
 function mask.install(deps)
     local ruler, state, world, parley = deps.ruler, deps.state, deps.world, deps.parley
     local cm = deps.cm or cm
     local core = deps.core or core
+    local u8 = deps.u8 or TALKHAMMER_U8
     local context_value = deps.context_value or common.get_context_value
     local original_talk, original_command = ruler.talk_to, ruler.handle_command
     local active
@@ -31,6 +38,14 @@ function mask.install(deps)
 
     local function log(message)
         if out then out("TH|MASK|" .. message) end
+    end
+
+    local function trim_line(value)
+        if type(value) ~= "string" then return "" end
+        local first, last = 1, #value
+        while first <= last and is_space(string.byte(value, first)) do first = first + 1 end
+        while last >= first and is_space(string.byte(value, last)) do last = last - 1 end
+        return u8.sub(value, first, last)
     end
 
     local function form_value(context)
@@ -89,8 +104,10 @@ function mask.install(deps)
         if refresh_waiting then return nil, "Облик ещё обновляется. Закрой дипломатию на карте и открой снова." end
         if refresh_error then return nil, "Не удалось прочитать облик. Выбери и подтверди его ещё раз на карте." end
         local subtype = equipped_subtype
-        if not subtype or subtype:find("changeling", 1, true) then return nil end
+        if not subtype or u8.index_of(subtype, "changeling") then return nil end
+        log("trace: cached faction lookup " .. subtype)
         local faction = owner_of(subtype)
+        log("trace: cached faction result " .. tostring(faction))
         if not faction or not world.exists(faction) then
             return nil, "У облика " .. subtype .. " не найдена действующая фракция. /mask off — обычные переговоры."
         end
@@ -329,7 +346,7 @@ function mask.install(deps)
         function(context) return context.string == "button_shapeshift" end,
         queue_refresh, true)
     queue_refresh()
-    log("installed (cached form reader; request trace)")
+    log("installed (cached form reader; byte-based text)")
 end
 
 return mask
