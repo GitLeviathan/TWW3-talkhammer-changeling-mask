@@ -208,24 +208,34 @@ function mask.install(deps)
             report("Маска", { "Для переговоров под этим обликом нужна другая действующая фракция." })
             return
         end
-        local visitor, recipient = ruler.snapshot(form.faction), ruler.snapshot(target)
+        log("trace: visitor snapshot")
+        local visitor = ruler.snapshot(form.faction)
+        log("trace: recipient snapshot")
+        local recipient = ruler.snapshot(target)
         if not (visitor.ok and recipient.ok and state.data) then
             report("Маска", { "Не удалось прочитать состояние обеих фракций." })
             return
         end
+        log("trace: visitor identity")
         local session = { form = form, target = target, text = text, turn = visitor.turn,
             campaign = state.data, started = os.clock(), identity = ruler.identity(form.faction) }
         local pair = pair_state(session)
+        log("trace: available outcomes")
         session.allowed = offer_outcomes(form.faction, target, visitor.turn, pair)
         local choices = {}
         for outcome in pairs(session.allowed) do choices[#choices + 1] = outcome end
         table.sort(choices)
 
         local language = deps.lang or TALKHAMMER_LANG
+        log("trace: language rule")
         local language_rule = language and language.rule(text) or "Use the language of the visitor's message."
+        log("trace: attitude")
         local attitude = world.attitude and world.attitude(target, form.faction)
+        log("trace: war status")
         local at_war = deps.orders.at_war(form.faction, target)
+        log("trace: recipient sheet")
         state.load_faction_sheet(target)
+        log("trace: system prompt")
         local system = table.concat({
             "You are " .. ruler.identity(target) .. " in Warhammer Fantasy. Stay in character.",
             state.character_of(target) or "", ruler.persona_block(target, false) or "",
@@ -238,9 +248,14 @@ function mask.install(deps)
             "Return a short in-character line and one permitted outcome. Do not claim an unavailable treaty or transfer.",
             language_rule,
         }, "\n")
+        log("trace: visitor description")
+        local visitor_description = ruler.describe(visitor, target)
+        log("trace: recipient description")
+        local recipient_description = ruler.describe(recipient, form.faction)
+        log("trace: user prompt")
         local user = table.concat({
-            "Visitor: " .. session.identity, "Visitor faction:\n" .. ruler.describe(visitor, target),
-            "Your faction:\n" .. ruler.describe(recipient, form.faction),
+            "Visitor: " .. session.identity, "Visitor faction:\n" .. visitor_description,
+            "Your faction:\n" .. recipient_description,
             "At war with each other: " .. tostring(at_war),
             "Your attitude toward the visitor's faction: " .. tostring(attitude or "unknown"),
             "Previous exchanges between these two sides:\n" .. table.concat(pair.history, "\n\n"),
@@ -270,6 +285,7 @@ function mask.install(deps)
 
     ruler.talk_to = function(target, text)
         if not can_use_mask() then return original_talk(target, text) end
+        if equipped_subtype then log("trace: dialogue form lookup") end
         local form, reason = selected_form()
         if reason then return report("Маска", { reason }) end
         if not form then return original_talk(target, text) end
@@ -285,9 +301,12 @@ function mask.install(deps)
         local mode = trim_line(command.text):lower()
         if mode == "on" or mode == "off" then state.set_setting(setting_key, mode == "on") end
         if not can_use_mask() then return report("Маска", { "Режим выключен. /mask on — включить." }) end
+        log("trace: mask status form lookup")
         local form, reason = selected_form()
+        log("trace: mask status text")
         local status = form and ("Облик: " .. ruler.identity(form.faction) .. " (" .. form.subtype .. ")")
             or (reason or "Облик не выбран. Переговоры идут от лица Перевёртыша.")
+        log("trace: mask status display")
         report("Маска", { status, "/mask off — вернуться к обычным переговорам." })
     end
 
@@ -310,7 +329,7 @@ function mask.install(deps)
         function(context) return context.string == "button_shapeshift" end,
         queue_refresh, true)
     queue_refresh()
-    log("installed (cached form reader; direct trade reader)")
+    log("installed (cached form reader; request trace)")
 end
 
 return mask
