@@ -429,11 +429,12 @@ function mask.install(deps)
         return true, outcome_labels[outcome]
     end
 
-    local function report(title, lines, background)
+    local function report(title, lines, background, display)
         if panel and panel.ready() and can_use_mask() and ruler.counterpart then
             local form, reason = selected_form()
             if form or reason then
-                panel_notice = { target = ruler.counterpart, turn = cm:turn_number(), campaign = state.data, lines = lines }
+                panel_notice = { target = ruler.counterpart, turn = cm:turn_number(), campaign = state.data,
+                    lines = display and display.lines or lines, warning = display and display.warning, pending = pending }
                 if not background or (panel.visible() and not panel.in_news()) then
                     draw_request = { target = ruler.counterpart, open = not background }
                 end
@@ -443,9 +444,9 @@ function mask.install(deps)
         ruler.report(title, lines, "MASK")
     end
 
-    local function tell_incident(session, lines, background)
+    local function tell_incident(session, lines, background, display)
         local title = ruler.label_for(session.target)
-        report(title, lines, background)
+        report(title, lines, background, display)
         incident = lines
         local request = {
             messages = {
@@ -472,7 +473,9 @@ function mask.install(deps)
             incident = nil
             local narrated = { "Облик: " .. session.identity, "", line, "" }
             for _, detail in ipairs(lines) do narrated[#narrated + 1] = detail end
-            report(title, narrated, true)
+            local reaction = display and { lines = display.lines and { line, unpack_args(display.lines) },
+                warning = display.warning }
+            report(title, narrated, true, reaction)
         end)
     end
 
@@ -490,6 +493,49 @@ function mask.install(deps)
 
     local function label(key)
         return world.name_of and world.name_of(key) or key
+    end
+
+    local function court_summary(form, target, pair, turn, blocked)
+        local lines = { "ЭТОТ РАЗГОВОР" }
+        if blocked then lines[#lines + 1] = "Облик раскрыт. Сделки доступны с хода " .. blocked .. "." end
+        local warning = exposure.known_warning(pair, turn)
+        if warning then lines[#lines + 1] = "Двор сослался на предупреждение от " .. label(warning) .. "." end
+
+        local ok, treaties = pcall(world.treaties_held, form.faction, target)
+        if not ok or type(treaties) ~= "table" then
+            lines[#lines + 1] = "Нет данных о действующих договорах."
+            return lines
+        end
+        local held, names = {}, {}
+        for _, treaty in ipairs(treaties) do held[treaty] = true end
+        if held["trade agreement"] then names[#names + 1] = "торговля" end
+        if held["non-aggression pact"] then names[#names + 1] = "пакт о ненападении" end
+        if held["military alliance"] then
+            names[#names + 1] = "военный союз"
+        elseif held["defensive alliance"] then
+            names[#names + 1] = "оборонительный союз"
+        elseif held.alliance then
+            names[#names + 1] = "союз"
+        end
+        local visitor, court = live_pair(form.faction, target)
+        local access = treaty_outcomes.military_access
+        local for_court = held["military access"] or (visitor and treaty_state(access, visitor, court) == true)
+        local for_visitor = court and treaty_state(access, court, visitor) == true
+        if for_court and for_visitor then
+            names[#names + 1] = "взаимный военный доступ"
+        elseif for_court then
+            names[#names + 1] = "военный доступ для двора"
+        elseif for_visitor then
+            names[#names + 1] = "военный доступ для фракции облика"
+        end
+        if held["vassal of theirs (they are the overlord)"] then names[#names + 1] = "фракция облика — вассал двора" end
+        if held["overlord of theirs (they are the vassal)"] then names[#names + 1] = "двор — вассал фракции облика" end
+        if #names == 0 then
+            lines[#lines + 1] = "Действующих договоров нет."
+        else
+            lines[#lines + 1] = "Договоры — " .. table.concat(names, ", ") .. "."
+        end
+        return lines
     end
 
     local function describe_plan(deal)
@@ -524,15 +570,17 @@ function mask.install(deps)
     local function show_pending(session, plan, line, assessment, background)
         local checking = not not needs_check(assessment)
         pending = { session = session, plan = plan, line = line, checking = checking }
-        local lines = {}
-        if not panel or not panel.ready() then lines = describe_plan(pending) end
+        local plain = not panel or not panel.ready()
+        local lines = plain and describe_plan(pending) or {}
         if checking then
-            table.insert(lines, 1, "Двор требует объяснений. Сделка приостановлена.")
+            local heading = "Двор требует объяснений. Сделка приостановлена."
+            local hint = "/mask explain <уточнённое предложение> • /mask withdraw • /mask insist"
+            table.insert(lines, 1, heading)
             for _, clue in ipairs(describe_clues(assessment)) do lines[#lines + 1] = clue end
-            lines[#lines + 1] = "/mask explain <уточнённое предложение> • /mask withdraw • /mask insist"
-            return tell_incident(session, lines, background)
+            lines[#lines + 1] = hint
+            return tell_incident(session, lines, background, { lines = { heading, hint } })
         end
-        lines[#lines + 1] = line
+        if plain then lines[#lines + 1] = line end
         lines[#lines + 1] = "Подтверди или отклони сделку. /mask confirm • /mask withdraw"
         report(ruler.label_for(session.target), lines, background)
     end
@@ -616,7 +664,7 @@ function mask.install(deps)
     local function settle(session, plan, line, assessment, background)
         local result = apply_plan(session, plan, assessment)
         remember(session, line, result)
-        report(ruler.label_for(session.target), { "Облик: " .. session.identity, "", line, "", result }, background)
+        report(ruler.label_for(session.target), { "Облик: " .. session.identity, "", line, "", result }, background, { lines = {} })
     end
 
     local function finish(session, err, response)
@@ -647,7 +695,7 @@ function mask.install(deps)
             log("rejected unavailable or inconsistent action plan")
             local result = "Условия сделки недоступны или противоречат друг другу. Дипломатия не изменилась."
             remember(session, text, result)
-            return report(ruler.label_for(session.target), { "Облик: " .. session.identity, "", text, "", result }, true)
+            return report(ruler.label_for(session.target), { "Облик: " .. session.identity, "", text, "", result }, true, { lines = {} })
         end
         local assessment = exposure.assess(pair_state(session), session, plan, allied)
         if needs_check(assessment) then return show_pending(session, plan, text, assessment, true) end
@@ -773,7 +821,7 @@ function mask.install(deps)
         log("request prepared " .. form.faction .. " -> " .. target)
         active = session
         ruler.awaiting[target] = session.started
-        report("Маска", { "Облик: " .. session.identity, "Собеседник обдумывает ответ…" })
+        report("Маска", { "Облик: " .. session.identity, "Собеседник обдумывает ответ…" }, false, { lines = {} })
         ruler.publish_status(nil, { busy = true, activity = "mask diplomacy" })
         log("request " .. form.subtype .. " | " .. form.faction .. " -> " .. target)
         local ok, error = pcall(deps.p2.post, "/chat/completions", request,
@@ -838,7 +886,7 @@ function mask.install(deps)
         if scandal then announce_scandal(session, scandal, lines) end
         remember(session, "Облик раскрыт.", table.concat(lines, " "))
         log("exposed " .. exposure.form_key(session.form) .. " at " .. session.target)
-        tell_incident(session, lines)
+        tell_incident(session, lines, false, { lines = {}, warning = assessment.warning and pair.warning })
     end
 
     ruler.COMMANDS.mask = true
@@ -939,44 +987,46 @@ function mask.install(deps)
             if target ~= ruler.counterpart or not can_use_mask() or not world.exists(target) then return end
             local form, reason = selected_form()
             if not form and not reason then return ruler.show_conversation(target, request.fallback) end
-            local history, blocked, identity, attitude = {}, nil, nil, nil
+            local history, blocked, identity, attitude, pair = {}, nil, nil, nil, nil
             if form and state.data then
-                local pair = exposure.pair(state.data, exposure.form_key(form), target)
+                pair = exposure.pair(state.data, exposure.form_key(form), target)
                 history, blocked = pair.transcript or pair.history, exposure.blocked_until(pair, turn)
                 identity = ruler.identity(form.faction)
                 attitude = world.attitude and world.attitude(target, form.faction)
             end
             local waiting = active and session_is_current(active)
-            if pending and (deps.actions.blocked or not session_is_current(pending.session)) then pending = nil end
+            if pending and (deps.actions.blocked or not session_is_current(pending.session)) then
+                pending, incident = nil, nil
+            end
             local checking = pending and pending.checking
-            local latest = history[#history]
-            local result = type(latest) == "table" and latest.result or nil
             local notice = panel_notice
-            local lines = notice and notice.target == target and notice.turn == turn
-                and notice.campaign == state.data and notice.lines or {}
-            local deal
+            if notice and (notice.target ~= target or notice.turn ~= turn or notice.campaign ~= state.data
+                or (notice.pending and notice.pending ~= pending)) then notice = nil end
+            local deal, detail, warning
             if pending then deal = table.concat(describe_plan(pending), "\n") end
             if checking then
-                local notes, present = {}, {}
-                for _, line in ipairs(lines) do
-                    notes[#notes + 1] = line
-                    present[line] = true
-                end
-                local assessment = exposure.assess(pair_state(pending.session), pending.session, pending.plan, allied)
-                for _, clue in ipairs(describe_clues(assessment)) do
-                    if not present[clue] then notes[#notes + 1] = clue end
-                end
-                lines = notes
-            elseif not pending and blocked then
-                deal = "Двор разоблачил этот облик.\nСделки доступны с хода " .. blocked .. "."
+                local assessment = exposure.assess(pair, pending.session, pending.plan, allied)
+                warning = assessment.warning and pair.warning
+                detail = describe_clues(assessment)
+                table.insert(detail, 1, "ПРОВЕРКА ДВОРА")
+            elseif pair then
+                detail = court_summary(form, target, pair, turn, blocked)
+                warning = notice and notice.warning
             end
             panel_state = { target = target, turn = turn, campaign = state.data, blocked = deps.actions.blocked,
                 epoch = context_epoch, pending = pending }
-            panel.render({
-                target = target, identity = identity, attitude = attitude, history = history, result = result,
+            local history_shown, detail_shown = panel.render({
+                target = target, identity = identity, attitude = attitude, history = history, detail = detail or {},
                 fallback = reason or request.fallback, waiting = waiting, pending = pending, blocked = blocked,
-                speech = waiting and active.text or (pending and pending.session.text), notice = lines, deal = deal,
+                speech = waiting and active.text or (pending and pending.session.text),
+                notice = notice and notice.lines or {}, deal = deal,
             })
+            local warning_shown = checking and detail_shown or not checking and history_shown
+            if warning_shown and warning and warning == pair.warning
+                and exposure.mark_warning_seen(pair, turn, warning.source) then
+                state.save()
+                if not checking then draw_request = { target = target } end
+            end
         end
 
         ruler.tick = function(...)

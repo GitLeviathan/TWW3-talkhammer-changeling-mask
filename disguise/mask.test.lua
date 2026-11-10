@@ -9,6 +9,7 @@ local listeners, scheduled, in_diplomacy, context_reads = {}, nil, false, 0
 local faction_reads = {}
 local native_draws, native_accepts, input_text = 0, 0, ""
 local panel_visible = false
+local ledger_ok = true
 local ui_sub, ui_ledger, ui_deal, ui_accept, ui_portrait, ui_attitude, ui_lines
 local buttons = {}
 for _, id in ipairs({ "th_mask_toggle", "th_mask_explain", "th_mask_withdraw", "th_mask_insist" }) do
@@ -21,12 +22,12 @@ local ui = {
     init = function() return true end,
     deep_find = function(_, id) return buttons[id] end,
     set_sub = function(text) ui_sub = text end,
-    set_ledger = function(text) ui_ledger = text end,
+    set_ledger = function(text) ui_ledger = text; return ledger_ok end,
     set_deal = function(text) ui_deal = text end,
     set_accept = function(text) ui_accept = text end,
     set_image = function(kind, path) if kind == "portrait" then ui_portrait = path end end,
     set_badge = function(kind, text) if kind == "att" then ui_attitude = text end end,
-    show_history = function(_, lines) ui_lines = table.concat(lines, "\n"); panel_visible = true end,
+    show_history = function(_, lines) ui_lines = table.concat(lines, "\n"); panel_visible = true; return true end,
     compose_take = function() local text = input_text; input_text = ""; return text end,
 }
 local factions = { [player] = true, reikland = true, gelt = true, kislev = true }
@@ -730,9 +731,13 @@ prepare_peace_reversal("gelt")
 ruler.tick()
 assert(buttons.th_mask_explain.visible and buttons.th_mask_withdraw.visible and buttons.th_mask_insist.visible)
 assert(ui_deal:find("Объявляет войну — " .. owner, 1, true), "The panel did not show what the player was asked to confirm")
+assert(ui_lines:find("I have questions about this.", 1, true) and not ui_ledger:find("I have questions about this.", 1, true),
+    "The court's spoken reaction replaced part of the clues block")
 click("explain")
 assert(not queued and buttons.th_mask_explain.visible, "Empty clarification closed the check")
 assert(ui_ledger:find("недавнего мира", 1, true), "The clarification hint hid the evidence")
+assert(ui_lines:find("Введи новое предложение", 1, true) and not ui_ledger:find("Введи новое предложение", 1, true),
+    "The command hint was not kept in the conversation feed")
 input_text = "Let us sign a fresh pact."
 click("explain")
 assert(queued.request.messages[2].content:find("Let us sign a fresh pact.", 1, true))
@@ -757,7 +762,7 @@ negotiate("gelt", "We declare war.", "declare_war")
 dismiss_narration()
 ruler.tick()
 click("insist")
-assert(not applied and not buttons.th_mask_insist.visible and ui_deal:find("разоблач", 1, true),
+assert(not applied and not buttons.th_mask_insist.visible and ui_ledger:find("Облик раскрыт", 1, true),
     "Insist did not use the existing exposure rule")
 dismiss_narration()
 
@@ -790,7 +795,7 @@ assert(ui_portrait == "bystander-portrait" and ruler.mask_speak_ready(),
 panel_visible = false
 mask_command("")
 ruler.tick()
-assert(panel_visible and ui_ledger:find("Облик", 1, true), "The explicit /mask status was lost with a closed panel")
+assert(panel_visible and ui_lines:find("Облик", 1, true), "The explicit /mask status was lost with a closed panel")
 panel_visible = false
 mask_command("off")
 ruler.tick()
@@ -868,7 +873,101 @@ assert(buttons.th_mask_insist.visible and buttons.th_mask_insist.text == "Нас
     and ui_deal:find("Условия на проверке", 1, true), "A click on the old card answered an unseen exposure check")
 dismiss_narration()
 click("insist")
-assert(not applied and ui_deal:find("разоблач", 1, true))
+assert(not applied and ui_ledger:find("Облик раскрыт", 1, true))
+dismiss_narration()
+
+turn, state.data, at_war = 100, {}, false
+local live_treaties = { "trade agreement", "non-aggression pact", "military alliance", "defensive alliance" }
+world.treaties_held = function(from, to)
+    assert(to == "gelt")
+    return from == "kislev" and live_treaties or {}
+end
+access["kislev|gelt"], access["gelt|kislev"] = true, false
+ruler.show_conversation("gelt")
+ruler.tick()
+assert(ui_ledger:find("торговля", 1, true) and ui_ledger:find("пакт о ненападении", 1, true)
+    and ui_ledger:find("военный союз", 1, true) and not ui_ledger:find("оборонительный союз", 1, true)
+    and ui_ledger:find("доступ для двора", 1, true), "The summary did not display existing treaties and their direction")
+assert(ui_deal:find("Условий сделки пока нет", 1, true))
+live_treaties, access["kislev|gelt"], access["gelt|kislev"] = {}, false, true
+ruler.show_conversation("gelt")
+ruler.tick()
+assert(not ui_ledger:find("торговля", 1, true) and ui_ledger:find("доступ для фракции облика", 1, true),
+    "Reopening the court did not refresh current treaties")
+access["kislev|gelt"] = true
+ruler.show_conversation("gelt")
+ruler.tick()
+assert(ui_ledger:find("взаимный военный доступ", 1, true))
+access["kislev|gelt"] = false
+
+local summary_form = exposure.form_key({ subtype = form, faction = owner })
+exposure.warn(state.data, "gelt", { summary_form }, "bystander", turn)
+ruler.show_conversation("gelt")
+ruler.tick()
+assert(not ui_ledger:find("bystander", 1, true), "The summary exposed a warning the court had not announced")
+pacts["gelt|" .. owner] = nil
+ruler.talk_to("gelt", "Sign a pact.")
+ruler.tick()
+panel_visible = false
+reply("non_aggression")
+dismiss_narration()
+ruler.tick()
+assert(not panel_visible and not exposure.pair(state.data, summary_form, "gelt").warning.seen,
+    "A check in a closed panel was marked as seen")
+ledger_ok = false
+ruler.show_conversation("gelt")
+ruler.tick()
+assert(not exposure.pair(state.data, summary_form, "gelt").warning.seen, "A failed ledger draw marked the warning seen")
+ledger_ok = true
+ruler.show_conversation("gelt")
+ruler.tick()
+assert(ui_ledger:find("bystander", 1, true) and not ui_ledger:find("доступ для фракции облика", 1, true),
+    "The live check did not take priority over the summary")
+click("withdraw")
+assert(ui_ledger:find("bystander", 1, true) and ui_ledger:find("доступ для фракции облика", 1, true)
+    and ui_lines:find("Предложение отозвано", 1, true), "The summary did not return with the seen warning")
+state.data = copy_save(state.data)
+ruler.show_conversation("gelt")
+ruler.tick()
+assert(ui_ledger:find("bystander", 1, true), "A disclosed warning was forgotten after loading")
+
+exposure.warn(state.data, "gelt", { summary_form }, "military_ally", turn + 1)
+turn = turn + 1
+ruler.show_conversation("gelt")
+ruler.tick()
+assert(not ui_ledger:find("bystander", 1, true) and not ui_ledger:find("military_ally", 1, true),
+    "Replacing a warning exposed the new source before the court named it")
+local summary_pair = exposure.pair(state.data, summary_form, "gelt")
+exposure.mark_warning_seen(summary_pair, turn, "military_ally")
+summary_pair.exposed_until = 105
+ruler.show_conversation("gelt")
+ruler.tick()
+assert(ui_ledger:find("105", 1, true), "The summary did not show when deals reopen")
+change_form("emp_karl_franz", "reikland")
+ruler.tick()
+assert(not ui_ledger:find("105", 1, true), "The summary leaked an exposure from a different form")
+change_form("ksl_katarin", "kislev")
+turn = 106
+ruler.tick()
+assert(not ui_ledger:find("105", 1, true) and not ui_ledger:find("military_ally", 1, true),
+    "The summary showed an expired block or warning")
+
+state.data, pacts["gelt|" .. owner] = {}, nil
+negotiate("gelt", "Sign a pact.", "non_aggression")
+negotiate("gelt", "Break the pact.", "break_non_aggression")
+exposure.warn(state.data, "gelt", { summary_form }, "bystander", turn)
+ruler.talk_to("gelt", "Sign a pact.")
+ruler.tick()
+panel_visible = false
+reply("non_aggression")
+dismiss_narration()
+ruler.tick()
+assert(not exposure.known_warning(exposure.pair(state.data, summary_form, "gelt"), turn))
+mask_command("insist")
+ruler.tick()
+ruler.tick()
+assert(ui_lines:find("bystander", 1, true) and ui_ledger:find("bystander", 1, true)
+    and ui_ledger:find("Облик раскрыт", 1, true), "A warning shown in the exposure result was not recorded")
 dismiss_narration()
 
 print("Mask diplomacy tests passed")

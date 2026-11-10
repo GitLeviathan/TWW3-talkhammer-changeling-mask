@@ -22,7 +22,7 @@ function panel.new(deps)
     end
 
     function view.visible()
-        local frame = ui.frame or ui.panel
+        local frame = ui.frame or ui.panel or ui.label
         if not frame then return false end
         local ok, visible = pcall(function() return frame:Visible() end)
         return ok and visible == true
@@ -100,6 +100,8 @@ function panel.new(deps)
 
     function view.render(data)
         local label = ruler.label_for(data.target)
+        local checking = data.pending and data.pending.checking
+        local has_ledger = ui.set_ledger and (not ui.has_ledger or ui.has_ledger())
         local lines = {}
         for _, entry in ipairs(data.history) do
             if type(entry) == "string" then
@@ -118,14 +120,15 @@ function panel.new(deps)
             append(lines, data.deal)
         end
         if #lines == 0 then lines[1] = data.fallback or "Введи реплику и нажми SPEAK." end
-        if ui.has_ledger and not ui.has_ledger() then
+        for _, note in ipairs(data.notice) do append(lines, note) end
+        if not has_ledger then
             if not data.pending then append(lines, data.deal) end
-            for _, note in ipairs(data.notice) do append(lines, note) end
+            for _, note in ipairs(data.detail) do append(lines, note) end
         end
 
         ui.mode = "talk"
         view.hide_accept()
-        ui.show_history("", lines, label)
+        local history_shown = ui.show_history("", lines, label)
         if ruler.update_news_label then ruler.update_news_label() end
         if ui.set_sub then ui.set_sub(data.identity and ("Под обликом — " .. data.identity) or "Маска включена") end
         if ruler.header_facts and ui.set_image then
@@ -137,14 +140,15 @@ function panel.new(deps)
         if ui.set_badge then
             ui.set_badge("att", "ОТНОШЕНИЕ\n" .. tostring(data.attitude or "—"))
             ui.set_badge("reg", "МАСКА\n" .. (data.blocked and "Раскрыта" or "Включена"))
-            local checking = data.pending and data.pending.checking
             ui.set_badge("mood", "ПРОВЕРКА\n" .. (checking and "Идёт" or "—"))
         end
-        local detail = table.concat(data.notice, "\n")
-        local deal = data.deal or data.result or "Условий сделки пока нет."
+        local deal = data.deal or "Условий сделки пока нет."
         if ui.set_deal then ui.set_deal(deal) end
-        if ui.set_ledger then ui.set_ledger(detail) end
+        local ledger_shown
+        if has_ledger then ledger_shown = ui.set_ledger(table.concat(data.detail, "\n")) end
         view.controls(true, true, data.pending and (data.pending.checking and "check" or "confirm"))
+        local visible = history_shown == true and view.visible()
+        return visible, visible and (not has_ledger or ledger_shown == true)
     end
     return view
 end

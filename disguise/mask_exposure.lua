@@ -30,6 +30,19 @@ function exposure.blocked_until(pair, turn)
     if until_turn and turn < until_turn then return until_turn end
 end
 
+function exposure.known_warning(pair, turn)
+    local warning = pair.warning
+    if warning and warning.seen and recent(warning.turn, turn) then return warning.source end
+end
+
+function exposure.mark_warning_seen(pair, turn, source)
+    local warning = pair.warning
+    if warning and warning.source == source and not warning.seen and recent(warning.turn, turn) then
+        warning.seen = true
+        return true
+    end
+end
+
 function exposure.assess(pair, session, plan, allied)
     local result = { by_outcome = {}, clues = {}, local_count = 0 }
     local deeds, turn = pair.recent_deals or {}, session.turn
