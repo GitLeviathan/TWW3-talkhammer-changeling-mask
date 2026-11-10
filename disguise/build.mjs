@@ -5,6 +5,7 @@ const stockPath = 'D:/Steam/steamapps/workshop/content/1142710/3808547073/talkha
 const mainPath = 'script\\talkhammer\\main.lua';
 const worldPath = 'script\\talkhammer\\lib\\world.lua';
 const modulePath = 'script\\talkhammer\\lib\\changeling_mask.lua';
+const exposurePath = 'script\\talkhammer\\lib\\mask_exposure.lua';
 const output = fileURLToPath(new URL('./00_talkhammer_changeling_mask.pack', import.meta.url));
 
 function unpack(buffer) {
@@ -68,10 +69,11 @@ if (main.split(hook).length !== 2 || !main.includes('ruler.init({ p2 = p2') || !
 }
 const patch = `do
     local mask = load_module("talkhammer/lib/changeling_mask.lua")
-    if mask and parley and orders then
+    local exposure = load_module("talkhammer/lib/mask_exposure.lua")
+    if mask and exposure and parley and orders then
         local ok, error = pcall(mask.install, {
             ruler = ruler, state = state, world = world, parley = parley,
-            actions = actions, orders = orders, terms = terms, lang = lang, p2 = p2, json = json,
+            actions = actions, orders = orders, terms = terms, lang = lang, p2 = p2, json = json, exposure = exposure,
         })
         if not ok then log("MASK|install failed: " .. tostring(error)) end
     end
@@ -80,6 +82,7 @@ end
 `;
 const entries = [
   [modulePath, await readFile(new URL('./mask.lua', import.meta.url))],
+  [exposurePath, await readFile(new URL('./mask_exposure.lua', import.meta.url))],
   [mainPath, Buffer.from(main.replace(hook, patch + hook), 'utf8')],
   [worldPath, Buffer.from(world.replace(leaderCache, '$1$2$3$1f.leader_subtype = subtype$3')
     .replace(tradeReader, nativeTradeReader), 'utf8')],
