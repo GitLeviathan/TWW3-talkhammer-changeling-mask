@@ -1,17 +1,40 @@
-local addon, exposure = ...
+local addon, exposure, panel = ...
 if type(addon) ~= "table" then addon = dofile("disguise/mask.lua") end
 if type(exposure) ~= "table" then exposure = dofile("disguise/mask_exposure.lua") end
+if type(panel) ~= "table" then panel = dofile("disguise/mask_panel.lua") end
 local player = "wh3_dlc24_tze_the_deceivers"
 local form, owner, is_leader = "emp_karl_franz", "reikland", true
 local turn, queued, applied, last, ordinary = 7, nil, nil, nil, 0
 local listeners, scheduled, in_diplomacy, context_reads = {}, nil, false, 0
 local faction_reads = {}
+local native_draws, native_accepts, input_text = 0, 0, ""
+local panel_visible = false
+local ui_sub, ui_ledger, ui_deal, ui_accept, ui_portrait, ui_attitude, ui_lines
+local buttons = {}
+for _, id in ipairs({ "th_mask_toggle", "th_mask_explain", "th_mask_withdraw", "th_mask_insist" }) do
+    buttons[id] = {
+        SetVisible = function(self, value) self.visible = value end,
+        SetStateText = function(self, value) self.text = value end,
+    }
+end
+local ui = {
+    init = function() return true end,
+    deep_find = function(_, id) return buttons[id] end,
+    set_sub = function(text) ui_sub = text end,
+    set_ledger = function(text) ui_ledger = text end,
+    set_deal = function(text) ui_deal = text end,
+    set_accept = function(text) ui_accept = text end,
+    set_image = function(kind, path) if kind == "portrait" then ui_portrait = path end end,
+    set_badge = function(kind, text) if kind == "att" then ui_attitude = text end end,
+    show_history = function(_, lines) ui_lines = table.concat(lines, "\n"); panel_visible = true end,
+    compose_take = function() local text = input_text; input_text = ""; return text end,
+}
 local factions = { [player] = true, reikland = true, gelt = true, kislev = true }
 local ruler = {
     COMMANDS = {}, awaiting = {},
     talk_to = function() ordinary = ordinary + 1 end,
     handle_command = function() end,
-    report = function(title, lines) last = table.concat(lines, "\n") end,
+    report = function(title, lines) last = table.concat(lines, "\n"); ui.set_accept(nil) end,
     publish_status = function() end,
     label_for = function(key) return key end,
     identity = function(key) return key end,
@@ -21,6 +44,14 @@ local ruler = {
 }
 ruler.select = function(target) ruler.counterpart = target; return true end
 ruler.react = function(target) ruler.counterpart = target end
+ruler.show_conversation = function()
+    native_draws = native_draws + 1
+    ui.mode, panel_visible = "talk", true
+    ui.set_accept("ACCEPT")
+end
+ruler.press_accept = function() native_accepts = native_accepts + 1 end
+ruler.header_facts = function(key) return { portrait = key .. "-portrait", crest = key .. "-crest" } end
+ruler.tick = function() end
 local settings = {}
 local actions = { blocked = false, CONCLUDE = {} }
 ruler.handle_command = function(command)
@@ -125,7 +156,8 @@ local p2 = { post = function(path, request, callback)
     return "r001"
 end }
 local core = { add_listener = function(_, id, event, condition, callback)
-    listeners[event] = { condition = condition, callback = callback }
+    listeners[event] = listeners[event] or {}
+    listeners[event][id] = { condition = condition, callback = callback }
 end }
 
 local native_find, native_match, native_sub = string.find, string.match, string.sub
@@ -135,14 +167,15 @@ local u8 = TALKHAMMER_U8 or {
 }
 addon.install({
     u8 = u8, cm = cm, core = core, context_value = value, ruler = ruler, state = state, actions = actions,
-    world = world, parley = parley, orders = orders, p2 = p2, exposure = exposure,
+    world = world, parley = parley, orders = orders, p2 = p2, exposure = exposure, ui = ui, panel = panel,
     json = { decode = function(content) return content end },
 })
 
 local function dispatch(event, name)
-    local listener = listeners[event]
     local context = { string = name }
-    if listener and listener.condition(context) then listener.callback(context) end
+    for _, listener in pairs(listeners[event] or {}) do
+        if listener.condition(context) then listener.callback(context) end
+    end
 end
 
 local function refresh()
@@ -636,5 +669,117 @@ ruler.react("bystander")
 ruler.react("gelt")
 mask_command("insist")
 assert(not applied and not queued, "Reactions that switched the court let an old check expose a form")
+
+state.data = {}
+ui.frame = { Visible = function() return panel_visible end }
+ui.panel, ui.label = ui.frame, {}
+ui.init()
+ruler.show_conversation("gelt")
+ruler.tick()
+assert(native_draws == 0 and ui_portrait == "gelt-portrait" and ui_sub:find(owner, 1, true),
+    "Opening a masked audience used the ordinary conversation view")
+assert(ui_attitude:find("-60", 1, true), "The portrait header omitted the attitude toward the masked faction")
+ruler.show_conversation("bystander")
+assert(native_draws == 0 and not ui_accept, "An old ordinary reply replaced the active masked court")
+ruler.press_accept()
+assert(native_accepts == 0 and not ui_accept, "Ordinary ACCEPT could act while the mask view was open")
+
+local key = form .. "|" .. owner .. "|gelt"
+state.data.mask_diplomacy[key].history[1] = "Legacy conversation"
+negotiate("gelt", "Masked greeting.", "none")
+ruler.tick()
+assert(ui_lines:find("Masked greeting.", 1, true) and ui_lines:find("Agreed.", 1, true),
+    "The masked transcript did not display both sides")
+assert(type(state.data.mask_diplomacy[key].history[2]) == "string", "The UI wrote records older builds cannot read")
+ruler.show_conversation("gelt")
+ruler.tick()
+assert(ui_lines:find("Legacy conversation", 1, true), "The panel dropped the old saved history")
+change_form("ksl_katarin", "kislev")
+ruler.tick()
+assert(not ui_lines:find("Masked greeting.", 1, true), "Switching masks exposed another mask's conversation")
+
+local function click(button)
+    dispatch("ComponentLClickUp", "th_mask_" .. button)
+    ruler.tick()
+end
+assert(buttons.th_mask_toggle.visible and buttons.th_mask_toggle.text:find("вкл", 1, true))
+click("toggle")
+assert(native_draws == 1 and ui_accept == "ACCEPT" and buttons.th_mask_toggle.visible
+    and buttons.th_mask_toggle.text:find("выкл", 1, true), "The toggle did not restore ordinary conversation")
+ruler.press_accept()
+assert(native_accepts == 1)
+click("toggle")
+assert(native_draws == 1 and not ui_accept and buttons.th_mask_toggle.text:find("вкл", 1, true))
+
+prepare_peace_reversal("gelt")
+ruler.tick()
+assert(buttons.th_mask_explain.visible and buttons.th_mask_withdraw.visible and buttons.th_mask_insist.visible)
+assert(ui_deal:find("Объявление войны", 1, true), "The panel did not show what the player was asked to confirm")
+click("explain")
+assert(not queued and buttons.th_mask_explain.visible, "Empty clarification closed the check")
+assert(ui_ledger:find("недавнего мира", 1, true), "The clarification hint hid the evidence")
+input_text = "Let us sign a fresh pact."
+click("explain")
+assert(queued.request.messages[2].content:find("Let us sign a fresh pact.", 1, true))
+reply("non_aggression")
+ruler.tick()
+assert(not buttons.th_mask_insist.visible and pacts["gelt|" .. owner], "Clarification did not settle its own deal")
+
+negotiate("gelt", "We declare war.", "declare_war")
+dismiss_narration()
+ruler.tick()
+click("withdraw")
+assert(not buttons.th_mask_insist.visible and not applied, "Withdraw did not cancel the deal")
+
+negotiate("gelt", "We declare war.", "declare_war")
+dismiss_narration()
+ruler.tick()
+dispatch("ComponentLClickUp", "th_mask_insist")
+turn = turn + 1
+ruler.tick()
+assert(not applied and not queued and not buttons.th_mask_insist.visible, "A queued click applied a stale decision")
+negotiate("gelt", "We declare war.", "declare_war")
+dismiss_narration()
+ruler.tick()
+click("insist")
+assert(not applied and not buttons.th_mask_insist.visible and ui_deal:find("разоблач", 1, true),
+    "Insist did not use the existing exposure rule")
+dismiss_narration()
+
+state.data = {}
+ruler.talk_to("gelt", "Wait for a reply.")
+ruler.tick()
+assert(ui_lines:find("обдумывает", 1, true))
+click("toggle")
+assert(ui_accept == "ACCEPT")
+reply("none")
+ruler.tick()
+assert(ui_accept == "ACCEPT", "A stale masked response cleared the ordinary panel after switching off")
+
+click("toggle")
+ruler.talk_to("gelt", "Reply after the panel closes.")
+ruler.tick()
+panel_visible = false
+reply("none")
+ruler.tick()
+assert(not panel_visible, "A masked response reopened a panel that the player had closed")
+ruler.show_conversation("gelt")
+ruler.tick()
+assert(ui_lines:find("Reply after the panel closes.", 1, true))
+ruler.react("bystander")
+assert(ruler.mask_speak_ready and not ruler.mask_speak_ready(),
+    "SPEAK could address a court that the displayed panel had not switched to")
+ruler.tick()
+assert(ui_portrait == "bystander-portrait" and ruler.mask_speak_ready(),
+    "The visible masked panel did not follow a new counterpart")
+panel_visible = false
+mask_command("")
+ruler.tick()
+assert(panel_visible and ui_ledger:find("Облик", 1, true), "The explicit /mask status was lost with a closed panel")
+panel_visible = false
+mask_command("off")
+ruler.tick()
+assert(panel_visible and buttons.th_mask_toggle.text:find("выкл", 1, true),
+    "Explicit /mask off did not restore the ordinary panel and toggle")
 
 print("Mask diplomacy tests passed")

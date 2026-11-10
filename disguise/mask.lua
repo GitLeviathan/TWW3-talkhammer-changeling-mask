@@ -84,6 +84,8 @@ function mask.install(deps)
     local u8 = deps.u8 or TALKHAMMER_U8
     local context_value = deps.context_value or common.get_context_value
     local original_talk, original_command = ruler.talk_to, ruler.handle_command
+    local panel = deps.panel and deps.panel.new(deps)
+    local draw_request, panel_notice, panel_state, button_action
     local active, pending, incident
     local counterpart = ruler.counterpart
     local context_epoch = 0
@@ -158,6 +160,9 @@ function mask.install(deps)
             end
         end
         equipped_subtype, refresh_error = key_string(raw), failed
+        if panel_state and panel_state.target == ruler.counterpart and panel.visible() and not panel.in_news() then
+            draw_request = { target = panel_state.target }
+        end
         log("equipped form: " .. tostring(equipped_subtype or (failed and "query failed" or "none")))
     end
 
@@ -197,7 +202,15 @@ function mask.install(deps)
     end
 
     local function remember(session, reply, result)
-        local history = pair_state(session).history
+        local pair = pair_state(session)
+        local history = pair.history
+        if not pair.transcript then
+            pair.transcript = {}
+            for i, exchange in ipairs(history) do pair.transcript[i] = exchange end
+        end
+        local transcript = pair.transcript
+        transcript[#transcript + 1] = { text = session.text, reply = reply, result = result }
+        if #transcript > 30 then table.remove(transcript, 1) end
         history[#history + 1] = "Visitor: " .. session.text .. "\nRuler: " .. reply .. "\nResult: " .. result
         if #history > 4 then table.remove(history, 1) end
         state.save()
@@ -241,6 +254,7 @@ function mask.install(deps)
 
     local function reset_context()
         pending, incident = nil, nil
+        panel_notice, button_action = nil, nil
         context_epoch = context_epoch + 1
     end
 
@@ -248,6 +262,9 @@ function mask.install(deps)
         if counterpart == ruler.counterpart then return end
         counterpart = ruler.counterpart
         reset_context()
+        if counterpart and panel_state and panel.visible() and not panel.in_news() then
+            draw_request = { target = counterpart }
+        end
     end
 
     local function peaceful_outcomes(allowed, session, projected)
@@ -396,13 +413,23 @@ function mask.install(deps)
         return true, outcome_labels[outcome]
     end
 
-    local function report(title, lines)
+    local function report(title, lines, background)
+        if panel and panel.ready() and can_use_mask() and ruler.counterpart then
+            local form, reason = selected_form()
+            if form or reason then
+                panel_notice = { target = ruler.counterpart, turn = cm:turn_number(), campaign = state.data, lines = lines }
+                if not background or (panel.visible() and not panel.in_news()) then
+                    draw_request = { target = ruler.counterpart, open = not background }
+                end
+                return
+            end
+        end
         ruler.report(title, lines, "MASK")
     end
 
-    local function tell_incident(session, lines)
+    local function tell_incident(session, lines, background)
         local title = ruler.label_for(session.target)
-        report(title, lines)
+        report(title, lines, background)
         incident = lines
         local request = {
             messages = {
@@ -429,7 +456,7 @@ function mask.install(deps)
             incident = nil
             local narrated = { "Облик: " .. session.identity, "", line, "" }
             for _, detail in ipairs(lines) do narrated[#narrated + 1] = detail end
-            report(title, narrated)
+            report(title, narrated, true)
         end)
     end
 
@@ -522,10 +549,10 @@ function mask.install(deps)
         return factions .. ": " .. table.concat(results, "\n")
     end
 
-    local function settle(session, plan, line, assessment)
+    local function settle(session, plan, line, assessment, background)
         local result = apply_plan(session, plan, assessment)
         remember(session, line, result)
-        report(ruler.label_for(session.target), { "Облик: " .. session.identity, "", line, "", result })
+        report(ruler.label_for(session.target), { "Облик: " .. session.identity, "", line, "", result }, background)
     end
 
     local function finish(session, err, response)
@@ -536,7 +563,9 @@ function mask.install(deps)
 
         if not session_is_current(session) then
             log("ignored stale dialogue for " .. session.form.faction .. " / " .. session.target)
-            if ruler.counterpart == session.target then report("Маска", { "Облик или ситуация изменились. Итог отменён." }) end
+            if ruler.counterpart == session.target and (not panel or not panel.ready() or can_use_mask()) then
+                report("Маска", { "Облик или ситуация изменились. Итог отменён." }, true)
+            end
             return
         end
 
@@ -546,7 +575,7 @@ function mask.install(deps)
         local text = ok and type(decision) == "table" and trim_line(decision.line) or ""
         if text == "" then
             log("invalid Codex reply: " .. tostring(err or "invalid response"))
-            if ruler.counterpart == session.target then report("Маска", { "Ответ не получен. Дипломатия не изменилась." }) end
+            if ruler.counterpart == session.target then report("Маска", { "Ответ не получен. Дипломатия не изменилась." }, true) end
             return
         end
         local plan = validate_plan(session, decision.outcomes)
@@ -554,7 +583,7 @@ function mask.install(deps)
             log("rejected unavailable or inconsistent action plan")
             local result = "Условия сделки недоступны или противоречат друг другу. Дипломатия не изменилась."
             remember(session, text, result)
-            return report(ruler.label_for(session.target), { "Облик: " .. session.identity, "", text, "", result })
+            return report(ruler.label_for(session.target), { "Облик: " .. session.identity, "", text, "", result }, true)
         end
         local assessment = exposure.assess(pair_state(session), session, plan, allied)
         if assessment.deal and (assessment.local_count >= 2 or assessment.warning) then
@@ -562,9 +591,9 @@ function mask.install(deps)
             local lines = describe_clues(assessment)
             table.insert(lines, 1, "Двор требует объяснений. Сделка приостановлена.")
             lines[#lines + 1] = "/mask explain <уточнённое предложение> • /mask withdraw • /mask insist"
-            return tell_incident(session, lines)
+            return tell_incident(session, lines, true)
         end
-        settle(session, plan, text, assessment)
+        settle(session, plan, text, assessment, true)
     end
 
     local function talk(form, target, text)
@@ -711,7 +740,7 @@ function mask.install(deps)
             return report("Маска", { "Нет действующей проверки. Начни новые переговоры." })
         end
         if mode == "explain" and explanation == "" then
-            return report("Маска", { "Укажи уточнённое предложение после /mask explain." })
+            return report("Маска", { "Введи новое предложение и отправь кнопкой «Уточнить» или командой /mask explain." })
         end
         local session = check.session
         pending, incident = nil, nil
@@ -755,6 +784,9 @@ function mask.install(deps)
         if mode == "on" or mode == "off" then
             state.set_setting(setting_key, mode == "on")
             if mode == "off" then reset_context() end
+            if panel and panel.ready() and ruler.counterpart then
+                return ruler.show_conversation(ruler.counterpart)
+            end
         end
         if not can_use_mask() then return report("Маска", { "Режим выключен. /mask on — включить." }) end
         if mode == "explain" or mode == "withdraw" or mode == "insist" then return answer_check(mode, argument) end
@@ -777,6 +809,134 @@ function mask.install(deps)
     end
     ruler.select = observe_after(ruler.select)
     ruler.react = observe_after(ruler.react)
+
+    if panel then
+        local original_show, original_tick = ruler.show_conversation, ruler.tick
+        local original_accept, original_news = ruler.press_accept, ruler.show_news
+
+        ruler.show_conversation = function(target, fallback)
+            local enabled = can_use_mask()
+            if panel.ready() and enabled and ruler.counterpart then
+                local form, reason = selected_form()
+                if form or reason then
+                    if target ~= ruler.counterpart then return end
+                    panel.hide_accept()
+                    draw_request = { target = target, fallback = fallback, open = true }
+                    return
+                end
+            end
+            panel_state, draw_request = nil, nil
+            local result = original_show(target, fallback)
+            panel.controls(cm:get_local_faction_name(true) == changeling, enabled, false)
+            return result
+        end
+
+        ruler.press_accept = function(...)
+            local shown = ruler.accept_shown
+            if draw_request or panel_state or (shown and shown.key ~= ruler.counterpart) then
+                return panel.hide_accept()
+            end
+            return original_accept(...)
+        end
+
+        ruler.mask_speak_ready = function()
+            if panel.in_news() then return true end
+            observe_court()
+            if draw_request then return false end
+            return not panel_state or
+                (panel_state.target == ruler.counterpart and panel_state.epoch == context_epoch)
+        end
+
+        if original_news then
+            ruler.show_news = function(...)
+                draw_request = nil
+                local result = original_news(...)
+                panel.controls(false)
+                return result
+            end
+        end
+
+        local function draw(request)
+            local target, turn = request.target, cm:turn_number()
+            if target ~= ruler.counterpart or not can_use_mask() or not world.exists(target) then return end
+            local form, reason = selected_form()
+            if not form and not reason then return ruler.show_conversation(target, request.fallback) end
+            local history, blocked, identity, attitude = {}, nil, nil, nil
+            if form and state.data then
+                local pair = exposure.pair(state.data, exposure.form_key(form), target)
+                history, blocked = pair.transcript or pair.history, exposure.blocked_until(pair, turn)
+                identity = ruler.identity(form.faction)
+                attitude = world.attitude and world.attitude(target, form.faction)
+            end
+            local waiting = active and session_is_current(active)
+            local checking = pending and not deps.actions.blocked and session_is_current(pending.session)
+            if pending and not checking then pending = nil end
+            local latest = history[#history]
+            local result = type(latest) == "table" and latest.result or nil
+            local notice = panel_notice
+            local lines = notice and notice.target == target and notice.turn == turn
+                and notice.campaign == state.data and notice.lines or {}
+            local deal
+            if checking then
+                local third = pending.session.third
+                local war_target
+                for _, outcome in ipairs(pending.plan) do
+                    if third_wars[outcome] then war_target = world.name_of and world.name_of(third) or third end
+                end
+                deal = panel.describe_plan(pending.plan, war_target)
+                local notes, present = {}, {}
+                for _, line in ipairs(lines) do
+                    notes[#notes + 1] = line
+                    present[line] = true
+                end
+                local assessment = exposure.assess(pair_state(pending.session), pending.session, pending.plan, allied)
+                for _, clue in ipairs(describe_clues(assessment)) do
+                    if not present[clue] then notes[#notes + 1] = clue end
+                end
+                lines = notes
+            elseif blocked then
+                deal = "Двор разоблачил этот облик.\nСделки доступны с хода " .. blocked .. "."
+            end
+            panel_state = { target = target, turn = turn, campaign = state.data, blocked = deps.actions.blocked,
+                epoch = context_epoch }
+            panel.render({
+                target = target, identity = identity, attitude = attitude, history = history, result = result,
+                fallback = reason or request.fallback, waiting = waiting, checking = checking, blocked = blocked,
+                speech = waiting and active.text or (checking and pending.session.text), notice = lines, deal = deal,
+            })
+        end
+
+        ruler.tick = function(...)
+            local result = original_tick(...)
+            local action = button_action
+            button_action = nil
+            if action and ruler.counterpart == action.target and panel.command(action.id) == action.mode then
+                if action.mode == "toggle" then
+                    ruler.handle_command({ cmd = "mask", text = can_use_mask() and "off" or "on" })
+                elseif pending and pending == action.check and session_is_current(pending.session) and not deps.actions.blocked then
+                    local explanation = action.mode == "explain" and trim_line(panel.take_text()) or ""
+                    answer_check(action.mode, explanation)
+                end
+            end
+            if not draw_request and panel_state and panel_state.target == ruler.counterpart
+                and panel.visible() and not panel.in_news()
+                and (panel_state.turn ~= cm:turn_number() or panel_state.campaign ~= state.data
+                    or panel_state.blocked ~= deps.actions.blocked or panel_state.epoch ~= context_epoch) then
+                draw_request = { target = panel_state.target }
+            end
+            local request = draw_request
+            draw_request = nil
+            if request and (request.open or panel.visible()) then draw(request) end
+            return result
+        end
+
+        core:add_listener("THMaskPanelButtons", "ComponentLClickUp",
+            function(context) return panel.command(context.string) ~= nil end,
+            function(context)
+                button_action = { id = context.string, mode = panel.command(context.string),
+                    target = ruler.counterpart, check = pending }
+            end, true)
+    end
 
     -- Reading CCO form data while the diplomacy panel is handling a click can
     -- re-enter other UI mods. Refresh on the campaign map and use only the cache here.
