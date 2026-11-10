@@ -218,6 +218,9 @@ local function reply(outcome, line)
     queued = nil
     callback(nil, { choices = { { message = { content = { line = line or "Agreed.", outcomes = type(outcome) == "table" and outcome or { outcome } } } } } })
 end
+local function mask_command(command)
+    ruler.handle_command({ cmd = "mask", text = command })
+end
 local function assert_pair(action, from, to)
     assert(applied and applied[1] == action and applied[2] == from and applied[3] == to,
         "Diplomacy used the wrong outcome or pair")
@@ -251,6 +254,7 @@ assert(not applied, "A reply from a previous disguise was applied")
 at_war = false
 ruler.talk_to("gelt", "We now speak for Kislev.")
 reply("war")
+mask_command("confirm")
 assert_pair("war", "gelt", "kislev")
 
 applied = nil
@@ -346,6 +350,7 @@ world.factions.gelt.is_human = false
 ruler.talk_to("gelt", "Kislev declares war.")
 assert(has_outcome("declare_war"), "The visitor cannot declare war")
 reply("declare_war")
+mask_command("confirm")
 assert_pair("war", "kislev", "gelt")
 
 ruler.talk_to("gelt", "Kislev grants you military access.")
@@ -370,15 +375,21 @@ reply("none")
 ruler.talk_to("gelt", "Attack them. [цель: Enemy]")
 assert(has_outcome("attack_third"), "Named third-party attack is unavailable")
 reply("attack_third")
+mask_command("confirm")
 assert_pair("war", "gelt", "reikland_enemy")
 ruler.talk_to("gelt", "Kislev will join your war. [цель: Enemy]")
 assert(has_outcome("join_recipient_war"), "The visitor cannot join the recipient war")
 reply("join_recipient_war")
+assert(last:find("Вступает в войну — kislev", 1, true)
+    and last:find("На стороне — gelt", 1, true) and last:find("Против — reikland_enemy", 1, true))
+mask_command("confirm")
 assert_pair("war", "kislev", "reikland_enemy")
 wars["gelt|reikland_enemy"] = false
 ruler.talk_to("gelt", "Join our war. [цель: Enemy]")
 assert(has_outcome("join_visitor_war"), "The recipient cannot join the visitor war")
 reply("join_visitor_war")
+assert(last:find("Вступает в войну — gelt", 1, true) and last:find("На стороне — kislev", 1, true))
+mask_command("confirm")
 assert_pair("war", "gelt", "reikland_enemy")
 
 at_war, applied_actions = true, {}
@@ -410,20 +421,19 @@ world.factions.gelt.subculture = "emp"
 ruler.talk_to("gelt", "Join the confederation of Kislev.")
 assert(has_outcome("confederate"), "Same-subculture confederation was unavailable")
 reply("confederate")
+mask_command("confirm")
 assert_pair("confederation", "kislev", "gelt")
 absorbed.gelt = nil
 ruler.talk_to("gelt", "Kislev will join your confederation.")
 reply("join_confederation")
+assert(last:find("Поглощает — gelt", 1, true) and last:find("Входит в состав — kislev", 1, true))
+mask_command("confirm")
 assert_pair("confederation", "gelt", "kislev")
 
 local function negotiate(target, text, outcome)
     applied, applied_actions = nil, {}
     ruler.talk_to(target, text)
     reply(outcome)
-end
-
-local function mask_command(command)
-    ruler.handle_command({ cmd = "mask", text = command })
 end
 
 local function dismiss_narration()
@@ -443,6 +453,7 @@ alliances["reikland|reikland_enemy"] = "military"
 for _ = 1, 2 do
     wars["gelt|reikland_enemy"], wars["reikland|reikland_enemy"] = false, false
     negotiate("gelt", "Attack my ally. [цель: Enemy]", "attack_third")
+    mask_command("confirm")
     assert_pair("war", "gelt", "reikland_enemy")
 end
 
@@ -607,12 +618,14 @@ failed_outcome = nil
 alliances[owner .. "|reikland_enemy"] = "military"
 wars[owner .. "|reikland_enemy"], wars["gelt|reikland_enemy"] = false, false
 negotiate("gelt", "Attack our ally. [цель: Enemy]", "attack_third")
+mask_command("confirm")
 assert_pair("war", "gelt", "reikland_enemy")
 trades["gelt|" .. owner] = true
 negotiate("gelt", "Cancel the trade agreement signed separately.", "break_trade")
 assert_pair("break_trade", "gelt", owner)
 negotiate("gelt", "We declare war.", "declare_war")
-assert(not applied, "The successful peace in a partial plan did not contribute a clue")
+assert(not applied and last:find("Двор требует объяснений", 1, true),
+    "The successful peace in a partial plan did not contribute a clue")
 dismiss_narration()
 mask_command("withdraw")
 
@@ -637,6 +650,7 @@ turn, state.data, at_war = 70, {}, false
 alliances[owner .. "|reikland_enemy"] = "military"
 wars[owner .. "|reikland_enemy"], wars["gelt|reikland_enemy"] = false, false
 negotiate("gelt", "Attack my ally. [цель: Enemy]", "attack_third")
+mask_command("confirm")
 alliances["gelt|" .. owner], pacts["gelt|" .. owner] = "defensive", nil
 engine_accepts = false
 negotiate("gelt", "Upgrade our alliance and sign a pact.", { "alliance", "non_aggression" })
@@ -651,6 +665,7 @@ state.data, pacts["gelt|" .. owner] = {}, nil
 wars[owner .. "|reikland_enemy"], wars["gelt|reikland_enemy"] = false, false
 negotiate("gelt", "Sign a pact.", "non_aggression")
 negotiate("gelt", "Attack my ally. [цель: Enemy]", "attack_third")
+mask_command("confirm")
 access["gelt|" .. owner] = nil
 negotiate("gelt", "Cancel our pact and grant access.", { "military_access", "break_non_aggression" })
 assert(not applied)
@@ -714,7 +729,7 @@ assert(native_draws == 1 and not ui_accept and buttons.th_mask_toggle.text:find(
 prepare_peace_reversal("gelt")
 ruler.tick()
 assert(buttons.th_mask_explain.visible and buttons.th_mask_withdraw.visible and buttons.th_mask_insist.visible)
-assert(ui_deal:find("Объявление войны", 1, true), "The panel did not show what the player was asked to confirm")
+assert(ui_deal:find("Объявляет войну — " .. owner, 1, true), "The panel did not show what the player was asked to confirm")
 click("explain")
 assert(not queued and buttons.th_mask_explain.visible, "Empty clarification closed the check")
 assert(ui_ledger:find("недавнего мира", 1, true), "The clarification hint hid the evidence")
@@ -781,5 +796,79 @@ mask_command("off")
 ruler.tick()
 assert(panel_visible and buttons.th_mask_toggle.text:find("выкл", 1, true),
     "Explicit /mask off did not restore the ordinary panel and toggle")
+
+state.data, at_war, turn = {}, false, 85
+absorbed[owner], absorbed.gelt = nil, nil
+ruler.select("gelt")
+mask_command("on")
+ruler.tick()
+negotiate("gelt", "Declare war on us.", "war")
+assert(not applied, "A declaration of war reached the engine before the player confirmed")
+ruler.tick()
+assert(ui_deal:find("Объявляет войну — gelt", 1, true) and ui_deal:find("Цель — " .. owner, 1, true),
+    "The card did not name the attacker and defender")
+assert(buttons.th_mask_insist.text == "Подтвердить" and buttons.th_mask_withdraw.text == "Отказаться"
+    and not buttons.th_mask_explain.visible, "The card showed the wrong decisions")
+click("withdraw")
+assert(not applied and not buttons.th_mask_insist.visible, "Rejecting a card did not cancel the war")
+
+negotiate("gelt", "We declare war.", "declare_war")
+ruler.tick()
+assert(ui_deal:find("Объявляет войну — " .. owner, 1, true) and ui_deal:find("Цель — gelt", 1, true))
+click("insist")
+assert_pair("war", owner, "gelt")
+assert(#applied_actions == 1 and not buttons.th_mask_insist.visible)
+mask_command("confirm")
+assert(#applied_actions == 1, "A repeated confirmation applied the same war twice")
+
+access["gelt|" .. owner] = nil
+wars["gelt|reikland_enemy"], wars[owner .. "|reikland_enemy"] = false, false
+negotiate("gelt", "Attack Enemy and grant us passage. [цель: Enemy]", { "attack_third", "military_access" })
+ruler.tick()
+assert(not applied and not access["gelt|" .. owner], "A term escaped the card's confirmation")
+assert(ui_deal:find("Цель — reikland_enemy", 1, true) and ui_deal:find("Военный доступ", 1, true))
+wars["gelt|reikland_enemy"] = true
+click("insist")
+assert(not applied and not access["gelt|" .. owner], "A stale war card applied another term of its package")
+
+negotiate("gelt", "Enter our confederation.", "confederate")
+ruler.tick()
+assert(not applied and ui_deal:find("Поглощает — " .. owner, 1, true)
+    and ui_deal:find("Входит в состав — gelt", 1, true))
+dispatch("ComponentLClickUp", "th_mask_insist")
+turn = turn + 1
+ruler.tick()
+assert(not applied and not absorbed.gelt and not buttons.th_mask_insist.visible)
+
+exposure.warn(state.data, "gelt", { exposure.form_key({ subtype = form, faction = owner }) }, "bystander", turn)
+negotiate("gelt", "We declare war.", "declare_war")
+dismiss_narration()
+ruler.tick()
+assert(not applied and buttons.th_mask_insist.text == "Настоять", "An exposure check was replaced by a normal card")
+mask_command("confirm")
+assert(not applied, "A plain confirmation bypassed an exposure check")
+click("insist")
+assert_pair("war", owner, "gelt")
+assert(not buttons.th_mask_insist.visible, "The exposure check required a second confirmation")
+
+state.data, pacts["gelt|" .. owner] = {}, nil
+wars["gelt|reikland_enemy"], wars[owner .. "|reikland_enemy"] = false, false
+alliances[owner .. "|reikland_enemy"] = nil
+negotiate("gelt", "Sign a pact.", "non_aggression")
+negotiate("gelt", "Break the pact.", "break_non_aggression")
+negotiate("gelt", "Attack Enemy. [цель: Enemy]", "attack_third")
+ruler.tick()
+assert(buttons.th_mask_insist.text == "Подтвердить")
+alliances[owner .. "|reikland_enemy"] = "military"
+mask_command("confirm")
+assert(not applied, "Confirmation did not check the current alliance")
+dispatch("ComponentLClickUp", "th_mask_insist")
+ruler.tick()
+assert(buttons.th_mask_insist.visible and buttons.th_mask_insist.text == "Настоять"
+    and ui_deal:find("Условия на проверке", 1, true), "A click on the old card answered an unseen exposure check")
+dismiss_narration()
+click("insist")
+assert(not applied and ui_deal:find("разоблач", 1, true))
+dismiss_narration()
 
 print("Mask diplomacy tests passed")
