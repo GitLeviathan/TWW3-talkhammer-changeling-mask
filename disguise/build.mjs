@@ -9,7 +9,7 @@ const modulePath = 'script\\talkhammer\\lib\\changeling_mask.lua';
 const exposurePath = 'script\\talkhammer\\lib\\mask_exposure.lua';
 const panelPath = 'script\\talkhammer\\lib\\mask_panel.lua';
 const layoutPath = 'ui\\talkhammer\\th_panel.twui.xml';
-const output = fileURLToPath(new URL('./00_talkhammer_changeling_mask.pack', import.meta.url));
+const output = fileURLToPath(new URL('./00_talkhammer_true_changeling_roleplay.pack', import.meta.url));
 
 function unpack(buffer) {
   if (buffer.length < 28 || buffer.toString('ascii', 0, 4) !== 'PFH5' || buffer.readUInt32LE(4) !== 3) {
