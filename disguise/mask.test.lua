@@ -63,6 +63,7 @@ ruler.handle_command = function(command)
     end
 end
 local pacts, access, alliances, trades, wars, absorbed = {}, {}, {}, {}, {}, {}
+local masters = {}
 local engine_accepts = true
 local bonus_accepts, bonuses = true, {}
 local function conclude(action, agreements, value)
@@ -74,6 +75,11 @@ local function conclude(action, agreements, value)
 end
 actions.CONCLUDE["non aggression pact"] = conclude("non_aggression", pacts, true)
 actions.CONCLUDE["soft military access"] = conclude("military_access", access, true)
+actions.CONCLUDE.vassal = function(vassal, master)
+    applied = { "vassal", master, vassal }
+    if engine_accepts then masters[vassal] = master end
+    return true
+end
 local break_alliance = conclude("break_alliance", alliances, false)
 local state = {
     data = {},
@@ -84,6 +90,7 @@ local state = {
     save = function() end,
 }
 local at_war = true
+local war_state_readable = true
 local applied_actions = {}
 local failed_outcome
 local parley = { apply = function(action, from, to)
@@ -119,12 +126,17 @@ local cm = {
             key = key,
             non_aggression_pact_with = function(_, other) return pacts[key .. "|" .. other.key] == true end,
             military_access_pact_with = function(_, other) return access[key .. "|" .. other.key] == true end,
+            is_vassal = function() return masters[key] ~= nil end,
+            is_vassal_of = function(_, other) return masters[key] == other.key end,
             allied_with = function(_, other) return not not alliances[key .. "|" .. other.key] end,
             military_allies_with = function(_, other) return alliances[key .. "|" .. other.key] == "military" end,
             defensive_allies_with = function(_, other) return alliances[key .. "|" .. other.key] == "defensive" end,
             is_null_interface = function() return false end,
             trade_agreement_with = function(_, other) return trades[key .. "|" .. other.key] == true end,
-            at_war_with = function(_, other) return wars[key .. "|" .. other.key] == true end,
+            at_war_with = function(_, other)
+                assert(war_state_readable, "War state unavailable")
+                return wars[key .. "|" .. other.key] == true
+            end,
             is_dead = function() return absorbed[key] == true end,
             faction_leader = function()
                 return { is_null_interface = function() return false end,
@@ -133,6 +145,7 @@ local cm = {
         }
     end,
     force_non_aggression_pact = function() end,
+    force_make_vassal = function() end,
     force_grant_military_access = function() end,
     force_break_non_aggression_pact = function(_, from, to, dissolved)
         assert(dissolved == false); conclude("break_non_aggression", pacts, false)(from, to)
@@ -969,5 +982,60 @@ ruler.tick()
 assert(ui_lines:find("bystander", 1, true) and ui_ledger:find("bystander", 1, true)
     and ui_ledger:find("Облик раскрыт", 1, true), "A warning shown in the exposure result was not recorded")
 dismiss_narration()
+
+turn, state.data, at_war = 120, {}, false
+wars["gelt|" .. owner], wars[owner .. "|gelt"] = nil, nil
+ruler.talk_to("gelt", "Приветствую.")
+assert(not has_outcome("vassalize") and not has_outcome("become_vassal"), "Vassalage was offered in an unrelated conversation")
+reply("none")
+at_war = true
+ruler.talk_to("gelt", "Примите нас в вассалы.")
+assert(not has_outcome("vassalize") and not has_outcome("become_vassal"), "Vassalage was offered while the two factions were at war")
+reply("none")
+at_war = false
+war_state_readable = false
+ruler.talk_to("gelt", "Примите нас в вассалы.")
+assert(not has_outcome("become_vassal"), "Vassalage was offered with an unreadable war state")
+reply("none")
+war_state_readable = true
+ruler.talk_to("gelt", "Просим принять нас в вассалы.")
+assert(has_outcome("become_vassal") and has_outcome("vassalize"), "Vassalage was not offered in both directions")
+applied = nil
+reply("become_vassal")
+ruler.tick()
+assert(not applied and ui_deal:find("Сюзерен — gelt", 1, true)
+    and ui_deal:find("Вассал — " .. owner, 1, true), "Offering submission skipped or misstated its confirmation")
+click("insist")
+assert_pair("vassal", "gelt", owner)
+assert(masters[owner] == "gelt" and not masters.gelt)
+
+ruler.talk_to("gelt", "Станьте нашими вассалами.")
+assert(not has_outcome("vassalize") and not has_outcome("become_vassal"), "An existing vassalage could be reversed")
+reply("none")
+masters[owner] = nil
+negotiate("gelt", "Станьте нашими вассалами.", "vassalize")
+ruler.tick()
+assert(not applied and ui_deal:find("Сюзерен — " .. owner, 1, true) and ui_deal:find("Вассал — gelt", 1, true))
+click("withdraw")
+assert(not applied and not masters.gelt)
+negotiate("gelt", "Станьте нашими вассалами и подпишем пакт.", { "vassalize", "non_aggression" })
+mask_command("confirm")
+assert(not applied and not masters.gelt, "Vassalage was accepted as part of a compound deal")
+
+negotiate("gelt", "Станьте нашими вассалами.", "vassalize")
+masters.gelt = "bystander"
+mask_command("confirm")
+assert(not applied and masters.gelt == "bystander", "A stale card transferred an existing vassal")
+masters.gelt = nil
+negotiate("gelt", "Станьте нашими вассалами.", "vassalize")
+engine_accepts = false
+mask_command("confirm")
+engine_accepts = true
+ruler.tick()
+assert(not masters.gelt and ui_lines:find("Игра не подтвердила вассалитет", 1, true))
+negotiate("gelt", "Станьте нашими вассалами.", "vassalize")
+mask_command("confirm")
+assert_pair("vassal", owner, "gelt")
+assert(masters.gelt == owner and not masters[owner])
 
 print("Mask diplomacy tests passed")
